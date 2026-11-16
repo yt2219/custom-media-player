@@ -1,5 +1,5 @@
 {
-  "volume": 0.7,
-  "shuffle": false,
+  "volume": 1.0,
+  "shuffle": true,
   "repeat": 0
 }

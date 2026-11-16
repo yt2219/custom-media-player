@@ -95,7 +95,11 @@ class MediaPlayerApp:
 
         # ----- State -----
         self.current_page = None
+        self.selected_song_path = None
         self._seeking = False  # True while user drags the seek bar
+
+        # Spacebar shortcut for Play/Pause
+        self.root.bind("<space>", self._on_space_key)
 
         # Show home page initially
         self._show_home()
@@ -300,6 +304,10 @@ class MediaPlayerApp:
 
         btn_frame = tk.Frame(header, bg=BG_DARK)
         btn_frame.pack(side=tk.RIGHT)
+        self.btn_lib_fav = self._make_button(btn_frame, "♡ Favorite", self._toggle_like)
+        self.btn_lib_fav.pack(side=tk.LEFT, padx=4)
+        self.btn_lib_add_pl = self._make_button(btn_frame, "➕ Add to Playlist", self._add_selected_to_playlist)
+        self.btn_lib_add_pl.pack(side=tk.LEFT, padx=4)
         self._make_button(btn_frame, "📁 Add Folder", self._add_folder).pack(side=tk.LEFT, padx=4)
         self._make_button(btn_frame, "📄 Add Files", self._add_files).pack(side=tk.LEFT, padx=4)
 
@@ -342,6 +350,7 @@ class MediaPlayerApp:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         self.lib_tree.bind("<Double-1>", self._on_lib_double_click)
+        self.lib_tree.bind("<<TreeviewSelect>>", self._on_lib_select)
 
         # Right-click context menu
         self.lib_menu = tk.Menu(self.root, tearoff=0,
@@ -356,6 +365,7 @@ class MediaPlayerApp:
         self.lib_tree.bind("<Button-3>", self._show_lib_menu)
 
         self._populate_library()
+        self._update_fav_btn()
 
     def _populate_library(self, songs=None):
         """Fill the treeview with songs."""
@@ -429,47 +439,117 @@ class MediaPlayerApp:
         if sel:
             self._play_song(sel[0])
 
+    def _on_lib_select(self, event=None):
+        if hasattr(self, "lib_tree"):
+            sel = self.lib_tree.selection()
+            if sel:
+                self.selected_song_path = sel[0]
+                self._update_fav_btn()
+
     def _ctx_toggle_fav(self):
         sel = self.lib_tree.selection()
         if sel:
-            self.lib.toggle_favorite(sel[0])
-            self._populate_library()
+            self.selected_song_path = sel[0]
+        self._toggle_like()
 
     def _ctx_add_to_playlist(self):
         sel = self.lib_tree.selection()
-        if not sel:
+        if sel:
+            self.selected_song_path = sel[0]
+        self._add_selected_to_playlist()
+
+    def _add_selected_to_playlist(self):
+        target = self._get_target_song()
+        if not target:
+            messagebox.showinfo("No Song Selected",
+                                "Please select a song from the library or start playback to add it to a playlist.")
             return
-        names = self.playlists.get_names()
-        if not names:
-            messagebox.showinfo("No Playlists",
-                                "Create a playlist first in the Playlists section.")
-            return
-        # Simple popup to pick playlist
+        self._show_add_to_playlist_dialog(target)
+
+    def _show_add_to_playlist_dialog(self, song_path):
+        song = self.lib.get_song(song_path)
+        title = song.get("title", os.path.basename(song_path)) if song else os.path.basename(song_path)
+
         win = tk.Toplevel(self.root)
         win.title("Add to Playlist")
-        win.geometry("300x350")
+        win.geometry("340x430")
+        win.minsize(300, 360)
         win.configure(bg=BG_DARK)
         win.transient(self.root)
         win.grab_set()
-        tk.Label(win, text="Select a playlist:",
-                 font=("Segoe UI", 12), bg=BG_DARK, fg=FG_PRIMARY).pack(pady=10)
-        listbox = tk.Listbox(win, bg=BG_CARD, fg=FG_PRIMARY,
-                              selectbackground=ACCENT, font=("Segoe UI", 11),
-                              border=0, highlightthickness=0)
-        for n in names:
-            listbox.insert(tk.END, n)
-        listbox.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
-        def _add():
+        tk.Label(win, text="Add to Playlist",
+                 font=("Segoe UI", 13, "bold"),
+                 bg=BG_DARK, fg=FG_PRIMARY).pack(pady=(12, 2))
+        tk.Label(win, text=f"Song: {title[:32]}",
+                 font=("Segoe UI", 10),
+                 bg=BG_DARK, fg=FG_SECONDARY).pack(pady=(0, 10))
+
+        list_frame = tk.Frame(win, bg=BG_DARK)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=4)
+
+        listbox = tk.Listbox(list_frame, bg=BG_CARD, fg=FG_PRIMARY,
+                             selectbackground=ACCENT, font=("Segoe UI", 11),
+                             border=0, highlightthickness=1,
+                             highlightbackground="#333", selectmode=tk.SINGLE)
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=listbox.yview)
+        listbox.configure(yscrollcommand=scrollbar.set)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def populate_pl():
+            listbox.delete(0, tk.END)
+            for n in self.playlists.get_names():
+                count = len(self.playlists.get_songs(n))
+                listbox.insert(tk.END, f"{n} ({count} songs)")
+
+        populate_pl()
+        if self.playlists.get_names():
+            listbox.select_set(0)
+
+        def do_add():
             idx = listbox.curselection()
-            if idx:
-                name = names[idx[0]]
-                for s in sel:
-                    self.playlists.add_song(name, s)
-                messagebox.showinfo("Done", f"Added to '{name}'.")
+            names = self.playlists.get_names()
+            if not idx or idx[0] >= len(names):
+                messagebox.showwarning("Select Playlist", "Please select a playlist from the list.", parent=win)
+                return
+            chosen_name = names[idx[0]]
+            added = self.playlists.add_song(chosen_name, song_path)
+            if added:
+                messagebox.showinfo("Success", f"Added '{title}' to playlist '{chosen_name}'.", parent=win)
+                win.destroy()
+                if self.current_page == "playlists":
+                    self._refresh_playlists()
+                elif self.current_page == "playlist_detail" and getattr(self, "_current_playlist_view", None) == chosen_name:
+                    self._view_playlist(chosen_name)
+            else:
+                messagebox.showinfo("Already in Playlist", f"'{title}' is already in playlist '{chosen_name}'.", parent=win)
                 win.destroy()
 
-        self._make_button(win, "Add", _add).pack(pady=10)
+        def do_new_playlist():
+            name = simpledialog.askstring("New Playlist", "Enter playlist name:", parent=win)
+            if name and name.strip():
+                clean_name = name.strip()
+                if not self.playlists.create(clean_name):
+                    messagebox.showwarning("Exists", f"Playlist '{clean_name}' already exists.", parent=win)
+                else:
+                    populate_pl()
+                    names = self.playlists.get_names()
+                    if clean_name in names:
+                        new_idx = names.index(clean_name)
+                        listbox.selection_clear(0, tk.END)
+                        listbox.selection_set(new_idx)
+                        listbox.see(new_idx)
+                    if self.current_page == "playlists":
+                        self._refresh_playlists()
+
+        listbox.bind("<Double-1>", lambda e: do_add())
+
+        btn_box = tk.Frame(win, bg=BG_DARK)
+        btn_box.pack(fill=tk.X, padx=16, pady=12)
+
+        self._make_button(btn_box, "➕ Add to Selected", do_add).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
+        self._make_button(btn_box, "➕ New Playlist", do_new_playlist).pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=(4, 0))
 
     def _ctx_remove(self):
         sel = self.lib_tree.selection()
@@ -556,15 +636,26 @@ class MediaPlayerApp:
         if not paths:
             messagebox.showinfo("Empty", "This playlist is empty.")
             return
-        self.queue.set_queue(paths)
-        first = self.queue.current()
-        if first:
-            self._play_song(first)
+        valid_paths = [p for p in paths if os.path.isfile(p)]
+        if not valid_paths:
+            messagebox.showwarning("Missing Files", "None of the songs in this playlist exist on disk.")
+            return
+        self.queue.set_queue(paths, start_path=valid_paths[0])
+        self._play_song(valid_paths[0])
+
+    def _play_song_from_playlist(self, playlist_name, filepath):
+        if not os.path.isfile(filepath):
+            messagebox.showwarning("File Missing", f"The file '{filepath}' could not be found.")
+            return
+        paths = self.playlists.get_songs(playlist_name)
+        self.queue.set_queue(paths, start_path=filepath)
+        self._play_song(filepath)
 
     def _view_playlist(self, name):
         """Open a sub-view showing songs in a playlist."""
         f = self._clear_main()
         self.current_page = "playlist_detail"
+        self._current_playlist_view = name
 
         header = tk.Frame(f, bg=BG_DARK)
         header.pack(fill=tk.X, pady=(0, 10))
@@ -597,19 +688,33 @@ class MediaPlayerApp:
             display = f"{i+1}. {title}"
             if not exists:
                 display += " ⚠️ (missing)"
-            tk.Label(row, text=display,
+            lbl_title = tk.Label(row, text=display,
                      font=("Segoe UI", 11),
-                     bg=BG_CARD, fg=FG_PRIMARY if exists else DANGER).pack(side=tk.LEFT)
+                     bg=BG_CARD, fg=FG_PRIMARY if exists else DANGER)
+            lbl_title.pack(side=tk.LEFT)
+            lbl_artist = None
             if artist:
-                tk.Label(row, text=f"  —  {artist}",
+                lbl_artist = tk.Label(row, text=f"  —  {artist}",
                          font=("Segoe UI", 10),
-                         bg=BG_CARD, fg=FG_DIM).pack(side=tk.LEFT)
+                         bg=BG_CARD, fg=FG_DIM)
+                lbl_artist.pack(side=tk.LEFT)
 
-            self._make_small_button(row, "🗑",
-                                     lambda n=name, p=path: self._remove_from_playlist(n, p)).pack(side=tk.RIGHT)
+            btn_del = self._make_small_button(row, "🗑",
+                                     lambda n=name, p=path: self._remove_from_playlist(n, p))
+            btn_del.pack(side=tk.RIGHT, padx=2)
 
             if exists:
-                row.bind("<Double-1>", lambda e, p=path: self._play_song(p))
+                btn_play = self._make_small_button(row, "▶",
+                                         lambda p=path: self._play_song_from_playlist(name, p))
+                btn_play.pack(side=tk.RIGHT, padx=4)
+
+                row.bind("<Double-1>", lambda e, p=path: self._play_song_from_playlist(name, p))
+                lbl_title.bind("<Double-1>", lambda e, p=path: self._play_song_from_playlist(name, p))
+                if lbl_artist:
+                    lbl_artist.bind("<Double-1>", lambda e, p=path: self._play_song_from_playlist(name, p))
+
+            row.bind("<Enter>", lambda e, r=row: r.configure(bg=BG_HOVER))
+            row.bind("<Leave>", lambda e, r=row: r.configure(bg=BG_CARD))
 
         self._current_playlist_view = name
 
@@ -631,7 +736,7 @@ class MediaPlayerApp:
 
         favs = self.lib.get_favorites()
         if not favs:
-            tk.Label(f, text="No favorites yet. Right-click a song and toggle favorite.",
+            tk.Label(f, text="No favorites yet. Select a song and click '♡ Favorite' to add it.",
                      font=("Segoe UI", 11), bg=BG_DARK, fg=FG_DIM).pack(anchor="w", pady=20)
             return
 
@@ -643,24 +748,34 @@ class MediaPlayerApp:
             title = song.get("title", "Unknown")
             if not exists:
                 title += " ⚠️"
-            tk.Label(row, text=f"❤️  {title}",
+            lbl_title = tk.Label(row, text=f"❤️  {title}",
                      font=("Segoe UI", 11),
-                     bg=BG_CARD, fg=FG_PRIMARY if exists else DANGER).pack(side=tk.LEFT)
-            tk.Label(row, text=f"  —  {song.get('artist', '')}",
-                     font=("Segoe UI", 10),
-                     bg=BG_CARD, fg=FG_DIM).pack(side=tk.LEFT)
+                     bg=BG_CARD, fg=FG_PRIMARY if exists else DANGER)
+            lbl_title.pack(side=tk.LEFT)
+            lbl_artist = None
+            if song.get("artist"):
+                lbl_artist = tk.Label(row, text=f"  —  {song.get('artist', '')}",
+                         font=("Segoe UI", 10),
+                         bg=BG_CARD, fg=FG_DIM)
+                lbl_artist.pack(side=tk.LEFT)
             tk.Label(row, text=song.get("duration_str", ""),
                      font=("Segoe UI", 10),
                      bg=BG_CARD, fg=FG_DIM).pack(side=tk.RIGHT, padx=10)
             self._make_small_button(row, "💔",
                                      lambda p=song["path"]: self._unfav(p)).pack(side=tk.RIGHT)
             if exists:
+                self._make_small_button(row, "▶",
+                                         lambda p=song["path"]: self._play_song(p)).pack(side=tk.RIGHT, padx=4)
                 row.bind("<Double-1>", lambda e, p=song["path"]: self._play_song(p))
+                lbl_title.bind("<Double-1>", lambda e, p=song["path"]: self._play_song(p))
+                if lbl_artist:
+                    lbl_artist.bind("<Double-1>", lambda e, p=song["path"]: self._play_song(p))
             row.bind("<Enter>", lambda e, r=row: r.configure(bg=BG_HOVER))
             row.bind("<Leave>", lambda e, r=row: r.configure(bg=BG_CARD))
 
     def _unfav(self, path):
         self.lib.toggle_favorite(path)
+        self._update_fav_btn()
         self._show_favorites()
 
     # ------------------------------------------------------------------
@@ -777,14 +892,24 @@ class MediaPlayerApp:
         row1 = tk.Frame(bar, bg=BG_CONTROL)
         row1.pack(fill=tk.X, padx=15, pady=(8, 0))
 
-        # Left: song info
+        # Left: song info & favorite button
         info = tk.Frame(row1, bg=BG_CONTROL)
         info.pack(side=tk.LEFT, fill=tk.X)
-        self.lbl_title = tk.Label(info, text="No song playing",
+
+        self.btn_fav = tk.Label(info, text="♡",
+                                font=("Segoe UI", 14),
+                                bg=BG_CONTROL, fg=FG_DIM,
+                                cursor="hand2")
+        self.btn_fav.pack(side=tk.LEFT, padx=(0, 10))
+        self.btn_fav.bind("<Button-1>", lambda e: self._toggle_like())
+
+        text_info = tk.Frame(info, bg=BG_CONTROL)
+        text_info.pack(side=tk.LEFT, fill=tk.X)
+        self.lbl_title = tk.Label(text_info, text="No song playing",
                                    font=("Segoe UI", 11, "bold"),
                                    bg=BG_CONTROL, fg=FG_PRIMARY, anchor="w")
         self.lbl_title.pack(anchor="w")
-        self.lbl_artist = tk.Label(info, text="",
+        self.lbl_artist = tk.Label(text_info, text="",
                                     font=("Segoe UI", 9),
                                     bg=BG_CONTROL, fg=FG_DIM, anchor="w")
         self.lbl_artist.pack(anchor="w")
@@ -811,8 +936,9 @@ class MediaPlayerApp:
                                    style="Horizontal.TScale",
                                    command=self._on_seek_move)
         self.seek_bar.pack(fill=tk.X, padx=15, pady=(4, 2))
-        self.seek_bar.bind("<ButtonPress-1>", lambda e: self._seek_start())
-        self.seek_bar.bind("<ButtonRelease-1>", lambda e: self._seek_end())
+        self.seek_bar.bind("<ButtonPress-1>", self._seek_start)
+        self.seek_bar.bind("<B1-Motion>", self._seek_drag)
+        self.seek_bar.bind("<ButtonRelease-1>", self._seek_end)
 
         # ---- Row 2: Controls ----
         row2 = tk.Frame(bar, bg=BG_CONTROL)
@@ -852,6 +978,7 @@ class MediaPlayerApp:
         # Update button states to match loaded settings
         self._update_shuffle_btn()
         self._update_repeat_btn()
+        self._update_fav_btn()
 
     def _ctrl_btn(self, parent, text, command, size=13):
         """Create a control-bar button."""
@@ -871,6 +998,55 @@ class MediaPlayerApp:
         return btn.cget("fg") == ACCENT
 
     # ==================================================================
+    # Favorite Helpers
+    # ==================================================================
+
+    def _get_target_song(self):
+        """Return the path of the currently selected or playing song."""
+        if getattr(self, "selected_song_path", None):
+            return self.selected_song_path
+        if self.audio.current_file:
+            return self.audio.current_file
+        return self.queue.current()
+
+    def _update_fav_btn(self):
+        """Update the visual state of the favorite/like buttons."""
+        target = self._get_target_song()
+        is_fav = bool(target and self.lib.is_favorite(target))
+        if hasattr(self, "btn_fav"):
+            self.btn_fav.config(text="❤️" if is_fav else "♡",
+                                fg="#e74c3c" if is_fav else FG_DIM)
+        if hasattr(self, "btn_lib_fav") and self.btn_lib_fav.winfo_exists():
+            self.btn_lib_fav.config(text="❤️ Favorited" if is_fav else "♡ Favorite",
+                                    bg="#e74c3c" if is_fav else ACCENT)
+
+    def _toggle_like(self):
+        """Toggle favorite status for the currently selected/playing song."""
+        target = self._get_target_song()
+        if not target:
+            messagebox.showinfo("No Song Selected",
+                                "Please select or play a song first to add it to Favorites.")
+            return
+        is_fav = self.lib.toggle_favorite(target)
+        self._update_fav_btn()
+        if self.current_page == "favorites":
+            self._show_favorites()
+        elif self.current_page == "library":
+            self._populate_library()
+
+    # ==================================================================
+    # Keyboard Shortcuts
+    # ==================================================================
+
+    def _on_space_key(self, event):
+        """Handle spacebar shortcut for play/pause without affecting text entries."""
+        focused = self.root.focus_get()
+        if isinstance(focused, (tk.Entry, ttk.Entry, tk.Text, ttk.Combobox, ttk.Spinbox)):
+            return None
+        self._toggle_play()
+        return "break"
+
+    # ==================================================================
     # Playback Actions
     # ==================================================================
 
@@ -886,6 +1062,9 @@ class MediaPlayerApp:
             messagebox.showerror("Playback Error",
                                  f"Could not play this file.\n{e}")
             return
+
+        self.selected_song_path = filepath
+        self._update_fav_btn()
 
         # Update queue if song isn't the current queue track
         if self.queue.current() != filepath:
@@ -910,10 +1089,22 @@ class MediaPlayerApp:
     def _toggle_play(self):
         """Play/Pause toggle."""
         if not self.audio.is_playing and not self.audio.is_paused:
-            # Nothing loaded — try to play current queue item
+            if self.audio.current_file and os.path.isfile(self.audio.current_file):
+                self._play_song(self.audio.current_file)
+                return
             current = self.queue.current()
             if current:
                 self._play_song(current)
+                return
+            if getattr(self, "selected_song_path", None) and os.path.isfile(self.selected_song_path):
+                self._play_song(self.selected_song_path)
+                return
+            if self.lib.songs:
+                first = self.lib.songs[0]["path"]
+                all_paths = [s["path"] for s in self.lib.songs]
+                self.queue.set_queue(all_paths, start_path=first)
+                self._play_song(first)
+                return
             return
 
         is_paused = self.audio.toggle_pause()
@@ -970,15 +1161,33 @@ class MediaPlayerApp:
 
     # --- Seek ---
 
-    def _seek_start(self):
+    def _seek_start(self, event=None):
         self._seeking = True
+        if event and self.seek_bar.winfo_width() > 0:
+            pct = max(0.0, min(100.0, (event.x / self.seek_bar.winfo_width()) * 100.0))
+            self.seek_var.set(pct)
+            if self.audio.duration > 0:
+                secs = (pct / 100.0) * self.audio.duration
+                self.lbl_time.config(text=_format_time(secs))
 
-    def _seek_end(self):
+    def _seek_drag(self, event=None):
+        if self._seeking and event and self.seek_bar.winfo_width() > 0:
+            pct = max(0.0, min(100.0, (event.x / self.seek_bar.winfo_width()) * 100.0))
+            self.seek_var.set(pct)
+            if self.audio.duration > 0:
+                secs = (pct / 100.0) * self.audio.duration
+                self.lbl_time.config(text=_format_time(secs))
+
+    def _seek_end(self, event=None):
+        if event and self.seek_bar.winfo_width() > 0:
+            pct = max(0.0, min(100.0, (event.x / self.seek_bar.winfo_width()) * 100.0))
+            self.seek_var.set(pct)
         self._seeking = False
         if self.audio.duration > 0:
             pct = self.seek_var.get()
             target = (pct / 100.0) * self.audio.duration
             self.audio.seek(target)
+            self.lbl_time.config(text=_format_time(target))
 
     def _on_seek_move(self, value):
         if self._seeking and self.audio.duration > 0:
@@ -1004,8 +1213,8 @@ class MediaPlayerApp:
                 pos = self.audio.get_position()
                 if not self._seeking:
                     if self.audio.duration > 0:
-                        pct = (pos / self.audio.duration) * 100
-                        self.seek_var.set(min(pct, 100))
+                        pct = (pos / self.audio.duration) * 100.0
+                        self.seek_var.set(min(pct, 100.0))
                     self.lbl_time.config(text=_format_time(pos))
 
         self.root.after(200, self._tick)

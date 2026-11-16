@@ -58,18 +58,28 @@ class PlaylistManager:
         return list(self.playlists.get(name, []))
 
     def add_song(self, name, filepath):
-        """Add a song path to a playlist (no duplicates)."""
+        """Add a song path to a playlist (no duplicates). Returns True if added, False otherwise."""
         if name not in self.playlists:
-            return
-        if filepath not in self.playlists[name]:
-            self.playlists[name].append(filepath)
-            self.save()
+            return False
+        import os
+        norm_fp = os.path.normcase(os.path.abspath(filepath))
+        for p in self.playlists[name]:
+            if os.path.normcase(os.path.abspath(p)) == norm_fp:
+                return False
+        self.playlists[name].append(filepath)
+        self.save()
+        return True
 
     def remove_song(self, name, filepath):
         """Remove a song path from a playlist."""
         if name not in self.playlists:
             return
-        self.playlists[name] = [p for p in self.playlists[name] if p != filepath]
+        import os
+        norm_fp = os.path.normcase(os.path.abspath(filepath))
+        self.playlists[name] = [
+            p for p in self.playlists[name]
+            if os.path.normcase(os.path.abspath(p)) != norm_fp
+        ]
         self.save()
 
 

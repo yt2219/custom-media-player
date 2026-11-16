@@ -110,15 +110,45 @@ class AudioPlayer:
         """
         if not self.is_playing and not self.is_paused:
             return
+        if not self.current_file or not os.path.isfile(self.current_file):
+            return
+
+        # Clamp target position to valid range
+        if self.duration > 0:
+            seconds = max(0.0, min(self.duration, float(seconds)))
+        else:
+            seconds = max(0.0, float(seconds))
+
+        was_paused = self.is_paused
+
         try:
+            # Temporarily unregister endevent and clear any pending MUSIC_END events
+            # so that calling stop() does not trigger a false "song ended" event
+            pygame.mixer.music.set_endevent()
             pygame.mixer.music.stop()
-            pygame.mixer.music.play(start=seconds)
+            pygame.event.clear(self.MUSIC_END)
+
+            # Reload and play starting from the requested seconds
+            try:
+                pygame.mixer.music.play(start=seconds)
+            except Exception:
+                pygame.mixer.music.load(self.current_file)
+                pygame.mixer.music.play(start=seconds)
+
             self._seek_offset = seconds
-            if self.is_paused:
+            self.is_playing = True
+
+            if was_paused:
                 pygame.mixer.music.pause()
-        except Exception:
-            # Some formats don't support seeking - just continue
-            pass
+                self.is_paused = True
+            else:
+                self.is_paused = False
+
+            # Re-register endevent now that playback from the new position is active
+            pygame.mixer.music.set_endevent(self.MUSIC_END)
+        except Exception as e:
+            pygame.mixer.music.set_endevent(self.MUSIC_END)
+            print(f"[player] seek error: {e}")
 
     # ------------------------------------------------------------------
     # Position / Duration

@@ -210,8 +210,11 @@ class MusicLibrary:
 
     def get_song(self, filepath):
         """Return the song dict for the given path, or None."""
+        if not filepath:
+            return None
+        norm_target = os.path.normcase(os.path.abspath(filepath))
         for s in self.songs:
-            if s["path"] == filepath:
+            if os.path.normcase(os.path.abspath(s["path"])) == norm_target:
                 return s
         return None
 
@@ -239,22 +242,50 @@ class MusicLibrary:
 
     def toggle_favorite(self, filepath):
         """Toggle whether a song is a favorite. Returns new state."""
-        filepath = os.path.abspath(filepath)
-        if filepath in self.favorites:
-            self.favorites.discard(filepath)
+        if not filepath:
+            return False
+        norm = os.path.normcase(os.path.abspath(filepath))
+        matched = None
+        for p in self.favorites:
+            if os.path.normcase(os.path.abspath(p)) == norm:
+                matched = p
+                break
+
+        if matched is not None:
+            self.favorites.discard(matched)
             is_fav = False
         else:
             self.favorites.add(filepath)
             is_fav = True
+
         self.save()
         return is_fav
 
     def is_favorite(self, filepath):
-        return os.path.abspath(filepath) in self.favorites
+        if not filepath:
+            return False
+        norm = os.path.normcase(os.path.abspath(filepath))
+        return any(os.path.normcase(os.path.abspath(p)) == norm for p in self.favorites)
 
     def get_favorites(self):
         """Return song dicts that are favorites."""
-        return [s for s in self.songs if s["path"] in self.favorites]
+        fav_norm = {os.path.normcase(os.path.abspath(p)) for p in self.favorites}
+        result = []
+        matched_paths = set()
+        for s in self.songs:
+            norm = os.path.normcase(os.path.abspath(s["path"]))
+            if norm in fav_norm:
+                result.append(s)
+                matched_paths.add(norm)
+        # Fallback for favorited songs not yet in self.songs
+        for p in self.favorites:
+            norm = os.path.normcase(os.path.abspath(p))
+            if norm not in matched_paths:
+                meta = read_metadata(p)
+                if meta:
+                    result.append(meta)
+                    matched_paths.add(norm)
+        return result
 
     # ------------------------------------------------------------------
     # Recently Played
